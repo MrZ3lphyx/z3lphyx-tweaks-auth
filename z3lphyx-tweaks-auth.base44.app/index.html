@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+ 
+<!-- Mirrored from z3lphyx-tweaks-auth.base44.app/ by HTTrack Website Copier/3.x [XR&CO'2014], Wed, 22 Jul 2026 09:44:20 GMT -->
+<!-- Added by HTTrack --><meta http-equiv="content-type" content="text/html;charset=utf-8" /><!-- /Added by HTTrack -->
+<head>
+  <meta charset="utf-8"/>
+  <link href="../media.base44.com/images/public/6a608801949bfa0162d3ef90/4167e72cd_logo.png" rel="icon" type="image/svg+xml"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <link href="api/apps/manifests/6a608801949bfa0162d3ef90/manifest.json" rel="manifest"/>
+  <title>
+   Base44 APP
+  </title>
+  <script crossorigin="" src="assets/index-C3vgvF1s.js" type="module">
+  </script>
+  <link crossorigin="" href="assets/index-Dmk7wAd9.css" rel="stylesheet"/>
+  <script type="module">
+   if (window.self === window.top) {
+  let lastPath = "";
+  function getPageNameFromPath(path) {
+    const segments = path.split("index.html").filter(Boolean);
+    return segments[0] || null;
+  }
+  function trackPageView() {
+    const path = window.location.pathname;
+    if (path === lastPath) return;
+    lastPath = path;
+    const pageName = getPageNameFromPath(path) || "home";
+    const appId = "6a608801949bfa0162d3ef90";
+    if (!appId) return;
+    fetch(`/api/app-logs/${appId}/log-user-in-app/${pageName}`, {
+      method: "POST",
+    }).catch(() => {});
+  }
+  const originalPushState = history.pushState.bind(history);
+  history.pushState = function (...args) {
+    originalPushState(...args);
+    trackPageView();
+  };
+  const originalReplaceState = history.replaceState.bind(history);
+  history.replaceState = function (...args) {
+    originalReplaceState(...args);
+    trackPageView();
+  };
+  window.addEventListener("popstate", trackPageView);
+  trackPageView();
+}
+  </script>
+  <meta content="yes" name="mobile-web-app-capable"/>
+  <meta content="black" name="apple-mobile-web-app-status-bar-style"/>
+  <meta content="Z3lphyx Gateway" name="apple-mobile-web-app-title"/>
+ </head>
+ <body>
+  <div id="root">
+  </div>
+ </body>
+
+<!-- Mirrored from z3lphyx-tweaks-auth.base44.app/ by HTTrack Website Copier/3.x [XR&CO'2014], Wed, 22 Jul 2026 09:44:22 GMT -->
+</html>
